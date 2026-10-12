@@ -25,6 +25,16 @@ enforces what `mcp-registry` approved. See [PLAN.md](PLAN.md).
 ```bash
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
+# easiest: one supervised process group in a single terminal
+# (idp :9300, billing :9101, crm :9102, gateway :8081 with OIDC inbound;
+#  logs in /tmp/mcp-gw-demo/*.log; Ctrl-C stops everything)
+./scripts/dev_up.sh
+# cleanup from another terminal: ./scripts/dev_down.sh
+```
+
+Manual per-terminal startup (what `dev_up.sh` does under the hood):
+
+```bash
 # terminal 1: demo IdP on :9300 (JWKS + token issuer)
 .venv/bin/python examples/demo_idp.py
 
@@ -36,20 +46,74 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 GATEWAY_JWKS_URL=http://127.0.0.1:9300/.well-known/jwks.json \
 GATEWAY_JWT_ISS=http://127.0.0.1:9300 \
 .venv/bin/python main.py
-
-# mint a demo user token (jwt_A) and call through the gateway:
-TOKEN=$(curl -s -X POST http://127.0.0.1:9300/token \
-  -d "grant_type=urn:demo:user&user=alice&agent_id=kai" | jq -r .access_token)
-
-# e2e tests (spin up everything on ephemeral ports, no manual setup):
-.venv/bin/python tests/test_m1.py   # proxy core (static-token fallback)
-.venv/bin/python tests/test_m2.py   # OIDC + multi-backend
 ```
 
 Client endpoint: `http://127.0.0.1:8081/mcp` (Streamable HTTP), all requests
 need `Authorization: Bearer <token>` — JWT when `GATEWAY_JWKS_URL` is set,
 else the static bootstrap tokens (`alice-token`, `bob-token`). Ops endpoint:
 `GET /health` shows connected backends + discovered tools.
+
+## Manual testing
+
+With the stack up (`./scripts/dev_up.sh`), using
+`examples/manual_client.py` (`list` / `call <tool> '<json-args>'`):
+
+```bash
+cd ~/workspace_gh/mcp-gateway
+
+# 1) mint a user token (demo shortcut grant; production = auth code + PKCE)
+export TOKEN=$(curl -s -X POST http://127.0.0.1:9300/token \
+  -d "grant_type=urn:demo:user&user=alice&agent_id=kai" | jq -r .access_token)
+
+# 2) list tools — expect 6: billing__* and crm__*, each with its own `status`
+.venv/bin/python examples/manual_client.py list
+
+# 3) call tools across both backends
+.venv/bin/python examples/manual_client.py call billing__get_invoice '{"invoice_id": "inv-1001"}'
+.venv/bin/python examples/manual_client.py call crm__search_contacts '{"query": "ada"}'
+.venv/bin/python examples/manual_client.py call billing__status '{}'   # compare with crm__status
+
+# 4) error semantics: unknown alias -> gateway JSON-RPC error;
+#    unknown tool on a KNOWN backend -> backend is_error passes through
+.venv/bin/python examples/manual_client.py call nope__x '{}'
+.venv/bin/python examples/manual_client.py call crm__nope '{}'
+
+# 5) authN negative paths: no token / garbage token -> 401 (client sees
+#    MCPError -32603 wrapping the rejection)
+TOKEN= .venv/bin/python examples/manual_client.py list
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8081/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+
+# 6) expired token (minted already-expired) -> rejected
+TOKEN=$(curl -s -X POST http://127.0.0.1:9300/token \
+  -d "grant_type=urn:demo:user&user=alice&expires_in=-10" | jq -r .access_token) \
+  .venv/bin/python examples/manual_client.py list
+
+# 7) watch the identity chain per call (user/agent from the JWT)
+tail -f /tmp/mcp-gw-demo/gateway.log | grep call_tool
+
+# 8) ops endpoint
+curl -s http://127.0.0.1:8081/health -H "Authorization: Bearer $TOKEN" | jq
+```
+
+Things worth playing with:
+
+- mint with a different `user=bob` and re-call — the gateway log identity
+  follows the token (no per-user authorization yet; that is M3)
+- without `jq`, mint with
+  `... | .venv/bin/python -c "import json,sys; print(json.load(sys.stdin)['access_token'])"`
+- restart only the IdP → previously minted tokens die (new RSA keypair per
+  boot, see `examples/demo_idp.py` docstring)
+
+## Automated tests
+
+```bash
+.venv/bin/python tests/test_m1.py   # proxy core e2e (static-token fallback)
+.venv/bin/python tests/test_m2.py   # OIDC + multi-backend e2e
+```
+
+Both spin up IdP/backends/gateway on ephemeral ports — no manual setup.
 
 ## How M1 works
 
