@@ -32,6 +32,13 @@ async def refund_payment(payment_id: str, amount: float, reason: str = "") -> di
     return {"payment_id": payment_id, "refunded": amount, "reason": reason, "status": "refunded"}
 
 
+@mcp.tool(description="Service status check.")
+async def status() -> dict:
+    # Same tool name as crm-mcp's `status` — exists to prove the gateway's
+    # alias__tool namespacing is collision-safe (M2).
+    return {"service": "billing-mcp", "ok": True}
+
+
 app = mcp.streamable_http_app(streamable_http_path="/mcp")
 
 if __name__ == "__main__":

@@ -10,7 +10,10 @@ enforces what `mcp-registry` approved. See [PLAN.md](PLAN.md).
 - **M1 — proxy core** ✅ single Streamable-HTTP endpoint, one backend,
   `alias__tool` namespacing, `tools/list` union + `tools/call` pass-through,
   session handling
-- M2 — inbound OIDC authN (JWT/JWKS) + multi-backend: planned
+- **M2 — OIDC inbound authN + multi-backend** ✅ demo IdP (JWT issuer, JWKS),
+  RS256 verification via SDK `TokenVerifier`, `sub`+`agent_id` in request
+  context, two backends with collision-safe namespacing (static-token
+  bootstrap fallback retained)
 - M3 — authZ + registry sync (policy from `mcp-registry` `/v1/sync/approved`): planned
 - M4 — credential brokering (OAuth2/OIDC outbound, RFC 8693 + demo IdP): planned
 - M5/M6 — audit + rate limit / guardrails: planned
@@ -22,18 +25,30 @@ enforces what `mcp-registry` approved. See [PLAN.md](PLAN.md).
 ```bash
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-# terminal 1: demo backend (billing-mcp on :9101)
+# terminal 1: demo IdP on :9300 (JWKS + token issuer)
+.venv/bin/python examples/demo_idp.py
+
+# terminal 2+3: demo backends (billing-mcp :9101, crm-mcp :9102)
 .venv/bin/python examples/billing_mcp_server.py
+.venv/bin/python examples/crm_mcp_server.py
 
-# terminal 2: gateway on :8081
+# terminal 4: gateway on :8081, OIDC inbound
+GATEWAY_JWKS_URL=http://127.0.0.1:9300/.well-known/jwks.json \
+GATEWAY_JWT_ISS=http://127.0.0.1:9300 \
 .venv/bin/python main.py
-# GATEWAY_BACKENDS="billing=http://127.0.0.1:9101/mcp,crm=http://...:9102/mcp" .venv/bin/python main.py
 
-# smoke/e2e test (spins up both on ephemeral ports, no manual setup):
-.venv/bin/python tests/test_m1.py
+# mint a demo user token (jwt_A) and call through the gateway:
+TOKEN=$(curl -s -X POST http://127.0.0.1:9300/token \
+  -d "grant_type=urn:demo:user&user=alice&agent_id=kai" | jq -r .access_token)
+
+# e2e tests (spin up everything on ephemeral ports, no manual setup):
+.venv/bin/python tests/test_m1.py   # proxy core (static-token fallback)
+.venv/bin/python tests/test_m2.py   # OIDC + multi-backend
 ```
 
-Client endpoint: `http://127.0.0.1:8081/mcp` (Streamable HTTP). Ops endpoint:
+Client endpoint: `http://127.0.0.1:8081/mcp` (Streamable HTTP), all requests
+need `Authorization: Bearer <token>` — JWT when `GATEWAY_JWKS_URL` is set,
+else the static bootstrap tokens (`alice-token`, `bob-token`). Ops endpoint:
 `GET /health` shows connected backends + discovered tools.
 
 ## How M1 works
