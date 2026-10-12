@@ -103,12 +103,12 @@ snapshot".
 
 ## 5. Tech choices
 
-- **TypeScript + Node 22 + Hono** for the HTTP surface
-- **`@modelcontextprotocol/sdk`** for MCP client (to backends) and server
-  (to agents) primitives — do not hand-roll JSON-RPC framing
-- better-sqlite3 for the audit store; in-memory rate limiter
-- Two demo backends: tiny FastMCP-style servers built on the same SDK
-  (`examples/billing-mcp`, `examples/crm-mcp`)
+- **Python 3.12 + FastAPI** for the HTTP surface (uvicorn, async end to end)
+- **Official Python MCP SDK (`mcp` / FastMCP)** for MCP client (to backends)
+  and server (to agents) primitives — do not hand-roll JSON-RPC framing
+- SQLite via stdlib `sqlite3` for the audit store; in-memory rate limiter
+- Two demo backends: tiny FastMCP servers (`examples/billing-mcp`,
+  `examples/crm-mcp`)
 
 ## 6. Milestones
 
