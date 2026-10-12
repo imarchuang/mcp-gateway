@@ -13,7 +13,7 @@ Gateway, Willow/MintMCP governance gateways):
 
 | Reference | What we borrow |
 | --- | --- |
-| Kong AI MCP Proxy (GW 3.12+, per-tool ACL 3.13+) | Per-tool ACL as the core authZ unit; REST→MCP proxying (stretch) |
+| Kong AI MCP Proxy (GW 3.12+, per-tool ACL 3.13+) | Per-tool ACL as the core authZ unit; OpenAPI-driven REST→MCP proxying (M6) |
 | AWS AgentCore Gateway | OIDC inbound auth; Cedar-style policies per tool/operation/parameter; interceptors |
 | IBM ContextForge | Virtual servers = curated tool bundles; OTel tracing |
 | Docker MCP Gateway | Simple file-based config; per-profile tool enable/disable |
@@ -51,6 +51,20 @@ Gateway, Willow/MintMCP governance gateways):
 7. **Guardrails (minimal)**
    - naive PII masking (email/card regex) on tool **results** before they
      return to the client
+8. **REST→MCP wrapping (OpenAPI-driven)**
+   - one legacy REST CRUD service (`examples/legacy-crm-api`, FastAPI +
+     SQLite) standing in for the existing API estate
+   - gateway-side adapter: fetch `/openapi.json`, map operations → tools
+     (`operationId` → tool name; path/query params + requestBody → one
+     JSON Schema), execute calls via httpx; tools surface under the same
+     `alias__tool` namespacing as real MCP backends
+   - curated exposure: per-backend allowlist of `operationId`s (the
+     Docker/Kong "enabled tools" pattern) — wrapping does NOT mean
+     exposing every endpoint
+   - HTTP-method → risk-class heuristic (GET=`read`, POST/PATCH=`write`,
+     DELETE=`dangerous`) mirrors what the registry records
+   - the legacy API requires an API key (`X-API-Key`); the gateway
+     injects it on outbound calls — a first taste of credential brokering
 
 ### Out of scope
 
@@ -58,7 +72,7 @@ Gateway, Willow/MintMCP governance gateways):
   `~/workspace_gh/mcp-registry`)
 - Server hosting/provisioning (Docker MCP Gateway-style spawn)
 - stdio bridging (stretch), human-approval async flow (stretch),
-  REST/GraphQL→MCP wrapping (stretch)
+  GraphQL→MCP wrapping (REST→MCP is in scope, see §2.8)
 
 ## 3. Architecture
 
@@ -77,7 +91,9 @@ MCP client (agent)
 │  7. audit   — append per-call record                    │
 └───────────────┬───────────────────────┬─────────────────┘
                 ▼                       ▼
-        billing-mcp server        crm-mcp server
+        billing-mcp server        legacy-crm-api
+        (real MCP server)         (FastAPI CRUD, wrapped
+                                   via OpenAPI → tools)
                 ▲
    policy sync: GET registry /v1/sync/approved?since= (30s poll)
 ```
@@ -120,15 +136,50 @@ snapshot".
   polling, risk-class default rules, last-synced fallback
 - **M4 — audit + rate limit**: audit store + viewer endpoint, token bucket
 - **M5 — guardrails**: PII masking on results
-- **M6 (stretch)**: OTel spans; one REST→MCP wrapped tool to show the
-  Kong/AgentCore pattern; `require_approval` via MCP elicitation
+- **M6 — REST→MCP wrapping**: legacy CRM CRUD service (FastAPI + SQLite,
+  API-key protected), OpenAPI→tools adapter, operationId allowlist,
+  method→risk heuristic, upstream API-key injection
+- **M7 (stretch)**: OTel spans; `require_approval` via MCP elicitation;
+  GraphQL→MCP
+
+### M6 detail: legacy CRM service & OpenAPI adapter
+
+`examples/legacy-crm-api`: FastAPI + SQLite CRUD service on :9200,
+`X-API-Key` required on every endpoint (stands in for any internal REST
+service built years before MCP existed):
+
+| REST endpoint | `operationId` | → tool | risk class |
+| --- | --- | --- | --- |
+| `GET /contacts?query=` | `search_contacts` | `crm__search_contacts` | read |
+| `GET /contacts/{id}` | `get_contact` | `crm__get_contact` | read |
+| `POST /contacts` | `create_contact` | `crm__create_contact` | write |
+| `PATCH /contacts/{id}` | `update_contact` | `crm__update_contact` | write |
+| `DELETE /contacts/{id}` | `delete_customer` | `crm__delete_customer` | dangerous |
+
+Adapter mapping rules (gateway side):
+
+- tool name = `operationId`; description = operation `summary`
+- input schema = path params ∪ query params ∪ requestBody properties,
+  merged into one `{"type": "object", ...}`; `required` = path params ∪
+  body.required
+- call: path params templated into the URL; remaining args go to query
+  (GET) or JSON body (POST/PATCH/DELETE); JSON response → text content;
+  non-2xx → MCP `is_error` result with status + body
+- per-backend allowlist of `operationId`s; demo beat: start with all five
+  exposed, then remove `delete_customer` from the allowlist and watch it
+  vanish from `tools/list` without touching the service or the registry
+- the gateway holds the service's API key in backend config and injects
+  `X-API-Key` on every outbound call — the agent never sees it
+  (credential brokering seed)
 
 ## 7. Demo script (end state)
 
 1. Registry demo has `acme/billing-mcp` v1.0.0 approved (see
    mcp-registry PLAN §7); gateway syncs it
 2. MCP client connects to **gateway only**, sees
-   `billing__get_invoice`, `billing__refund_payment`, `crm__search_contacts`
+   `billing__get_invoice`, `billing__refund_payment` (real MCP server)
+   alongside `crm__search_contacts`, `crm__delete_customer` (legacy REST
+   CRUD service wrapped via OpenAPI — no MCP server behind them)
 3. `alice` calls `billing__get_invoice` → allowed, audited, result
    PII-masked
 4. `alice` calls `billing__refund_payment` → denied by
@@ -137,7 +188,13 @@ snapshot".
 5. Registry deprecates v1.0.0 → next sync removes the tools from the
    gateway's catalog — **the registry decided in days; the gateway
    enforced in milliseconds**
-6. `GET /audit` shows the full chain: user, agent, tool, decision,
+6. Provenance demo: `crm__*` tools were built from
+   `GET http://legacy-crm:9200/openapi.json` of a plain FastAPI CRUD
+   service; `crm__delete_customer` (DELETE → `dangerous`) is denied by
+   the same registry-sourced policy as any native MCP tool — the policy
+   engine cannot tell wrapped REST from real MCP, and neither can the
+   agent
+7. `GET /audit` shows the full chain: user, agent, tool, decision,
    latency
 
 ## 8. Success criteria for the demo

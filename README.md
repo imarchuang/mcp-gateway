@@ -12,7 +12,9 @@ enforces what `mcp-registry` approved. See [PLAN.md](PLAN.md).
   session handling
 - M2 — authN + multi-backend: planned
 - M3 — authZ + registry sync (policy from `mcp-registry` `/v1/sync/approved`): planned
-- M4/M5/M6 — audit + rate limit / guardrails / stretch: planned
+- M4/M5 — audit + rate limit / guardrails: planned
+- M6 — REST→MCP wrapping (legacy FastAPI CRUD + OpenAPI adapter): planned
+- M7 — stretch (OTel, elicitation approval, GraphQL→MCP): planned
 
 ## Run
 
