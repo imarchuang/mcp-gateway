@@ -1,15 +1,17 @@
-"""App wiring: backends + proxy server + Streamable HTTP surface."""
+"""App wiring: backends + authN + proxy server + Streamable HTTP surface."""
 
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
 
+from mcp.server.auth.settings import AuthSettings
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from .authn import JWTTokenVerifier, StaticTokenVerifier
 from .backends import Backend
 from .proxy import build_gateway_server
 
@@ -30,7 +32,36 @@ def parse_backends_env(raw: str) -> dict[str, str]:
     return out
 
 
-def create_app(backend_urls: dict[str, str]) -> Starlette:
+def create_app(
+    backend_urls: dict[str, str],
+    *,
+    jwks_url: str | None = None,
+    issuer: str | None = None,
+    audience: str = "mcp-gateway",
+    static_tokens: dict[str, str] | None = None,
+) -> Starlette:
+    """Build the gateway app. AuthN: JWT via JWKS when `jwks_url` is given,
+    otherwise the static-token bootstrap fallback (M1 style)."""
+    if jwks_url:
+        if not issuer:
+            raise ValueError("issuer is required when jwks_url is set")
+        verifier = JWTTokenVerifier(jwks_url, issuer, audience)
+        issuer_url = issuer
+        log.info("authN: OIDC JWT (jwks=%s, iss=%s, aud=%s)", jwks_url, issuer, audience)
+    else:
+        verifier = StaticTokenVerifier(static_tokens or {"alice-token": "alice", "bob-token": "bob"})
+        issuer_url = "https://static-auth.demo.local"  # informational only
+        log.info("authN: static tokens (bootstrap fallback)")
+
+    # NB: the SDK only installs the BearerAuthBackend (which calls the
+    # verifier) when `auth` is set — auth=None + verifier = everything 401s.
+    # The URLs are informational in the demo: strict iss/aud checking happens
+    # in JWTTokenVerifier itself.
+    auth = AuthSettings(
+        issuer_url=issuer_url,  # type: ignore[arg-type]
+        resource_server_url=f"https://gateway.demo.local/{audience}",  # type: ignore[arg-type]
+    )
+
     backends = {alias: Backend(alias, url) for alias, url in backend_urls.items()}
     server = build_gateway_server(backends)
 
@@ -47,6 +78,8 @@ def create_app(backend_urls: dict[str, str]) -> Starlette:
 
     app = server.streamable_http_app(
         streamable_http_path="/mcp",
+        auth=auth,
+        token_verifier=verifier,
         custom_starlette_routes=[Route("/health", health, methods=["GET"])],
     )
 
@@ -57,6 +90,7 @@ def create_app(backend_urls: dict[str, str]) -> Starlette:
     @asynccontextmanager
     async def lifespan(starlette_app):
         async with inner_lifespan(starlette_app):
+            await verifier.prefetch()
             for be in backends.values():
                 await be.connect()
             log.info("gateway ready, %d backend(s) connected", len(backends))

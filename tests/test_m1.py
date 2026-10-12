@@ -41,14 +41,21 @@ def wait_ready(url: str, timeout: float = 15.0) -> None:
 
 async def client_checks() -> None:
     url = f"http://127.0.0.1:{GATEWAY_PORT}/mcp"
-    async with streamable_http_client(url) as (read, write, *_):
+    # M2 note: the gateway now always requires authN; without a JWKS config
+    # it falls back to static bootstrap tokens (alice-token -> alice).
+    http = httpx.AsyncClient(headers={"Authorization": "Bearer alice-token"}, timeout=10)
+    async with streamable_http_client(url, http_client=http) as (read, write, *_):
         async with ClientSession(read, write) as s:
             init = await s.initialize()
             assert init.server_info.name == "mcp-gateway-demo", init.server_info
 
             tools = (await s.list_tools()).tools
             names = {t.name for t in tools}
-            assert names == {"billing__get_invoice", "billing__refund_payment"}, names
+            assert names == {
+                "billing__get_invoice",
+                "billing__refund_payment",
+                "billing__status",
+            }, names
             gi = next(t for t in tools if t.name == "billing__get_invoice")
             assert "invoice_id" in gi.input_schema["properties"], gi.input_schema
             assert gi.description.startswith("[billing]"), gi.description

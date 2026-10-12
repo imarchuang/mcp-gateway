@@ -13,6 +13,7 @@ import mcp.types as types
 from mcp.server.lowlevel import Server
 from mcp.shared.exceptions import MCPError
 
+from .authn import identity_from
 from .backends import Backend
 
 log = logging.getLogger("gateway.proxy")
@@ -51,8 +52,14 @@ def build_gateway_server(backends: dict[str, Backend]) -> Server:
                 f"as '<server>{SEPARATOR}<tool>'",
             )
         backend = backends[alias]
-        log.info("call_tool %s -> backend %r tool %r", params.name, alias, tool_name)
-        # M1: pure pass-through of the backend's CallToolResult.
+        ident = identity_from(getattr(ctx, "request", None))
+        log.info(
+            "call_tool %s -> backend %r tool %r (user=%s agent=%s)",
+            params.name, alias, tool_name, ident.get("user", "?"), ident.get("agent", "?"),
+        )
+        # M1/M2: pure pass-through of the backend's CallToolResult.
+        # M3 will evaluate policy[ident, tool] here; M4 injects an
+        # exchanged outbound token; M5 writes the audit record.
         return await backend.call(tool_name, dict(params.arguments or {}))
 
     return Server(
