@@ -10,11 +10,12 @@ enforces what `mcp-registry` approved. See [PLAN.md](PLAN.md).
 - **M1 — proxy core** ✅ single Streamable-HTTP endpoint, one backend,
   `alias__tool` namespacing, `tools/list` union + `tools/call` pass-through,
   session handling
-- M2 — authN + multi-backend: planned
+- M2 — inbound OIDC authN (JWT/JWKS) + multi-backend: planned
 - M3 — authZ + registry sync (policy from `mcp-registry` `/v1/sync/approved`): planned
-- M4/M5 — audit + rate limit / guardrails: planned
-- M6 — REST→MCP wrapping (legacy FastAPI CRUD + OpenAPI adapter): planned
-- M7 — stretch (OTel, elicitation approval, GraphQL→MCP): planned
+- M4 — credential brokering (OAuth2/OIDC outbound, RFC 8693 + demo IdP): planned
+- M5/M6 — audit + rate limit / guardrails: planned
+- M7 — REST→MCP wrapping (legacy FastAPI CRUD + OpenAPI adapter): planned
+- M8 — stretch (OTel, elicitation approval, GraphQL→MCP): planned
 
 ## Run
 
